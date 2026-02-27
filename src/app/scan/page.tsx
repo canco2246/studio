@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { Badge } from "@/components/ui/badge"
 import { 
   Select, 
   SelectContent, 
@@ -21,17 +22,21 @@ import {
   ArrowRight,
   Info,
   Database,
-  Tag
+  Tag,
+  Cpu,
+  Wifi
 } from "lucide-react"
-import { getAssetByTag, addAsset } from "@/lib/store"
+import { getAssetByTag, addAsset, recordScan } from "@/lib/store"
 import { useToast } from "@/hooks/use-toast"
 import { NewAsset } from "@/lib/types"
 import { AIDescriptionButton } from "@/components/assets/ai-description-button"
+import Link from "next/link"
 
 export default function ScanInterface() {
   const [tagId, setTagId] = React.useState("")
   const [formVisible, setFormVisible] = React.useState(false)
   const [duplicateError, setDuplicateError] = React.useState(false)
+  const [isHardwareActive, setIsHardwareActive] = React.useState(true)
   const [formData, setFormData] = React.useState<NewAsset>({
     tagId: "",
     name: "",
@@ -42,27 +47,61 @@ export default function ScanInterface() {
   })
   const { toast } = useToast()
 
-  const handleSimulateScan = () => {
-    if (!tagId) return
-    
-    const existing = getAssetByTag(tagId)
-    if (existing) {
-      setDuplicateError(true)
-      toast({
-        title: "Duplicate Tag Detected",
-        description: `This RFID tag is already assigned to: ${existing.name}`,
-        variant: "destructive"
-      })
-      return
+  // Hardware Listener for IDT 107 (HID Mode)
+  React.useEffect(() => {
+    let buffer = ""
+    let lastKeyTime = Date.now()
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isHardwareActive) return
+
+      const currentTime = Date.now()
+      // RFID scanners send keys very rapidly (usually < 30ms apart)
+      if (currentTime - lastKeyTime > 50) {
+        buffer = "" // Clear buffer if it's slow (manual typing)
+      }
+
+      if (e.key === 'Enter') {
+        if (buffer.length > 3) {
+          handleIncomingScan(buffer)
+          buffer = ""
+        }
+      } else if (e.key.length === 1) {
+        buffer += e.key
+      }
+      
+      lastKeyTime = currentTime
     }
 
-    setDuplicateError(false)
-    setFormData(prev => ({ ...prev, tagId }))
-    setFormVisible(true)
-    toast({
-      title: "Tag Scanned Successfully",
-      description: "Complete the form below to link this tag to a new asset."
-    })
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isHardwareActive])
+
+  const handleIncomingScan = (id: string) => {
+    setTagId(id)
+    const existing = recordScan(id)
+    
+    if (existing) {
+      toast({
+        title: "Asset Identified",
+        description: `Successfully logged scan for: ${existing.name}`,
+        variant: "default",
+      })
+      setFormVisible(false)
+    } else {
+      setFormData(prev => ({ ...prev, tagId: id }))
+      setFormVisible(true)
+      setDuplicateError(false)
+      toast({
+        title: "New Tag Detected",
+        description: "Tag ID not found in database. Create a new record?",
+      })
+    }
+  }
+
+  const handleManualScan = () => {
+    if (!tagId) return
+    handleIncomingScan(tagId)
   }
 
   const handleSave = () => {
@@ -94,16 +133,33 @@ export default function ScanInterface() {
   return (
     <AppShell>
       <div className="max-w-4xl mx-auto space-y-8">
+        <div className="flex items-center justify-between px-2">
+          <div className="flex items-center gap-3">
+            <div className={`size-3 rounded-full animate-pulse ${isHardwareActive ? 'bg-emerald-500' : 'bg-red-500'}`} />
+            <span className="text-sm font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+              <Cpu className="size-4" /> Hardware Status: {isHardwareActive ? 'IDT 107 Connected' : 'Disconnected'}
+            </span>
+          </div>
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="text-[10px] uppercase font-bold text-muted-foreground hover:text-primary"
+            onClick={() => setIsHardwareActive(!isHardwareActive)}
+          >
+            {isHardwareActive ? 'Disable Hardware Listening' : 'Enable Hardware Listening'}
+          </Button>
+        </div>
+
         <Card className="border-none shadow-lg bg-gradient-to-br from-primary to-primary/80 text-primary-foreground overflow-hidden">
           <CardContent className="p-8">
             <div className="flex flex-col md:flex-row items-center justify-between gap-8">
               <div className="space-y-4 text-center md:text-left">
                 <div className="inline-flex items-center gap-2 bg-white/20 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider backdrop-blur-sm">
-                  <Database className="size-3" /> Hardware Integrated
+                  <Wifi className="size-3" /> Auto-Sync Active
                 </div>
-                <h2 className="text-3xl font-headline font-bold">Simulate RFID Scan</h2>
+                <h2 className="text-3xl font-headline font-bold">Ready to Scan</h2>
                 <p className="text-primary-foreground/80 max-w-sm">
-                  Input a tag ID to simulate a signal from IDT107 or Chainway C72 hardware. The system enforces unique record validation.
+                  The system is listening for signals from your IDT 107 reader. Just place a tag near the reader or type manually below.
                 </p>
                 <div className="flex gap-3">
                   <div className="relative flex-1">
@@ -112,27 +168,24 @@ export default function ScanInterface() {
                       placeholder="Enter RFID Tag ID..." 
                       className="bg-white text-foreground pl-10 h-12 rounded-xl focus:ring-accent transition-all border-none"
                       value={tagId}
-                      onChange={(e) => {
-                        setTagId(e.target.value)
-                        setDuplicateError(false)
-                      }}
-                      onKeyDown={(e) => e.key === 'Enter' && handleSimulateScan()}
+                      onChange={(e) => setTagId(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleManualScan()}
                     />
                   </div>
                   <Button 
                     className="h-12 px-6 bg-accent hover:bg-accent/90 text-accent-foreground font-bold rounded-xl shadow-lg shadow-accent/20"
-                    onClick={handleSimulateScan}
+                    onClick={handleManualScan}
                   >
-                    Scan Tag
+                    Process Tag
                   </Button>
                 </div>
               </div>
               <div className="relative">
-                <div className="size-48 bg-white/10 rounded-full flex items-center justify-center animate-pulse border border-white/20">
+                <div className={`size-48 bg-white/10 rounded-full flex items-center justify-center border border-white/20 transition-all duration-500 ${isHardwareActive ? 'animate-pulse scale-110' : 'opacity-50'}`}>
                   <ScanLine className="size-24 text-white/40" />
                 </div>
                 <div className="absolute -bottom-2 -right-2 bg-accent text-accent-foreground p-3 rounded-2xl shadow-xl shadow-black/20">
-                  <Info className="size-6" />
+                  <Database className="size-6" />
                 </div>
               </div>
             </div>
@@ -141,9 +194,12 @@ export default function ScanInterface() {
 
         {formVisible && (
           <Card className="border-none shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <CardHeader>
-              <CardTitle className="font-headline">Create Asset Record</CardTitle>
-              <CardDescription>Link digital metadata to the physical RFID tag.</CardDescription>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="font-headline">New Asset Detected</CardTitle>
+                <CardDescription>Assign metadata to the physical tag: <span className="font-mono text-primary font-bold">{formData.tagId}</span></CardDescription>
+              </div>
+              <Badge variant="secondary" className="bg-primary/10 text-primary border-none">Discovery Mode</Badge>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -213,11 +269,10 @@ export default function ScanInterface() {
                   value={formData.description}
                   onChange={e => setFormData({ ...formData, description: e.target.value })}
                 />
-                <p className="text-[10px] text-muted-foreground italic">Tip: Use the AI Assistant to generate a professional asset description based on the name and category.</p>
               </div>
             </CardContent>
             <CardFooter className="bg-muted/30 flex justify-end gap-3 p-4">
-              <Button variant="ghost" onClick={() => setFormVisible(false)}>Cancel</Button>
+              <Button variant="ghost" onClick={() => setFormVisible(false)}>Ignore Scan</Button>
               <Button className="bg-primary hover:bg-primary/90 font-bold px-8" onClick={handleSave}>
                 Save Record
               </Button>
@@ -230,7 +285,7 @@ export default function ScanInterface() {
             <AlertCircle className="size-6 text-red-600 shrink-0" />
             <div>
               <p className="text-red-900 font-bold">Duplication Error</p>
-              <p className="text-red-700 text-sm">This tag ID is already assigned to an existing asset. Please use a unique RFID tag or update the existing record.</p>
+              <p className="text-red-700 text-sm">This tag ID is already assigned. Use a different tag.</p>
               <Link href="/inventory" className="text-red-600 text-xs font-bold hover:underline mt-2 inline-block">
                 Go to Inventory List <ArrowRight className="size-3 inline ml-1" />
               </Link>

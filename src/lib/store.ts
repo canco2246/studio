@@ -1,7 +1,6 @@
 import { Asset, NewAsset } from './types';
 
 // Simple in-memory storage simulation
-// In a real app, this would be a database call (PostgreSQL as suggested)
 let assets: Asset[] = [
   {
     id: '1',
@@ -39,11 +38,24 @@ let assets: Asset[] = [
 ];
 
 export function getAssets() {
-  return [...assets];
+  return [...assets].sort((a, b) => new Date(b.lastScanned).getTime() - new Date(a.lastScanned).getTime());
 }
 
 export function getAssetByTag(tagId: string) {
   return assets.find(a => a.tagId === tagId);
+}
+
+export function recordScan(tagId: string): Asset | null {
+  const assetIndex = assets.findIndex(a => a.tagId === tagId);
+  if (assetIndex !== -1) {
+    const updatedAsset = {
+      ...assets[assetIndex],
+      lastScanned: new Date().toISOString()
+    };
+    assets[assetIndex] = updatedAsset;
+    return updatedAsset;
+  }
+  return null;
 }
 
 export function addAsset(newAsset: NewAsset): Asset {
